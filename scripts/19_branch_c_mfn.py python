@@ -1,0 +1,87 @@
+import os
+import argparse
+import yaml
+import pickle
+import torch
+import torch.nn as nn
+import numpy as np
+from pathlib import Path
+from tqdm.auto import tqdm
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate MFN embeddings from Mel patches.")
+    parser.add_argument('--config', type=str, default='configs/config.yaml', help='Path to config YAML')
+    return parser.parse_args()
+
+def load_config(config_path):
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+class SharedMLPAndCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Shared MLP for per-frame embedding
+        self.mlp = nn.Sequential(
+            nn.Linear(64*128, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128)
+        )
+        # 1D-CNN Aggregation
+        self.cnn = nn.Sequential(
+            nn.Conv1d(in_channels=128, out_channels=64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)  # Final 128-D embedding
+
+    def forward(self, x):
+        # x shape: (batch_size=6, 64, 128)
+        batch_size = x.size(0)
+        x_flat = x.view(batch_size, -1)  # (6, 8192)
+        h = self.mlp(x_flat)             # (6, 128)
+        h = h.permute(1, 0).unsqueeze(0)  # (1, 128, 6)
+        z = self.cnn(h)                   # (1, 128, 6)
+        z = self.pool(z)                  # (1, 128, 1)
+        return z.squeeze(-1).squeeze(0)   # (128,)
+
+def main():
+    args = parse_args()
+    config = load_config(args.config)
+    processed_root = config['paths']['processed_data']
+    input_base = os.path.join(processed_root, "mel_patches")
+    output_base = os.path.join(processed_root, "branch_c_embeddings")
+    checkpoint_dir = config['paths']['checkpoints']
+    machine_types = config['dataset']['machine_types']
+    splits = config['dataset']['splits']
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SharedMLPAndCNN().to(device)
+    model.eval()
+
+    for machine in tqdm(machine_types, desc="Machines"):
+        for split in splits:
+            mel_file = os.path.join(input_base, machine, split, "mel_patches.pickle")
+            if not os.path.exists(mel_file):
+                continue
+            with open(mel_file, "rb") as f:
+                mel_data = pickle.load(f)
+            embeddings = {}
+            for clip_id, patches in tqdm(mel_data.items(), desc=f"{machine}/{split}", leave=False):
+                patches_tensor = torch.tensor(patches, dtype=torch.float32).to(device)
+                with torch.no_grad():
+                    z_C = model(patches_tensor)
+                embeddings[clip_id] = z_C.cpu().numpy()
+            output_dir = os.path.join(output_base, machine, split)
+            os.makedirs(output_dir, exist_ok=True)
+            with open(os.path.join(output_dir, "z_C.pickle"), "wb") as f:
+                pickle.dump(embeddings, f)
+
+    # Save model checkpoint
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    torch.save(model.state_dict(), os.path.join(checkpoint_dir, "branch_c_mfn.pth"))
+
+if __name__ == "__main__":
+    main()
