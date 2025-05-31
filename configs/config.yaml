@@ -1,0 +1,25 @@
+# configs/config.yaml
+
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+  mel_patches: data/mel_patches
+  branch_a_embeddings: data/branch_a_embeddings
+  branch_b_embeddings: data/branch_b_embeddings
+  branch_c_embeddings: data/branch_c_embeddings
+  branch_b_fused: data/branch_b_fused
+  final_scores: data/final_scores
+  final_scores_branch_b: data/final_scores_branch_b
+  checkpoints: checkpoints
+
+dataset:
+  machine_types: ["ToyCar", "ToyTrain", "bearing", "fan", "gearbox", "slider", "valve"]
+  splits: ["train", "test", "supplemental"]
+
+audio:
+  sample_rate: 16000
+  segment_duration: 1.0
+  n_mels: 128
+  frame_length: 0.256
+  n_frames: 6
+  target_time_steps: 64
